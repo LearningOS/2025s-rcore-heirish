@@ -7,6 +7,7 @@ _start:
     .section .bss.stack
     .globl boot_stack_lower_bound
 boot_stack_lower_bound:
-    .space 4096 * 16
+    # .space 4096 * 16 
+    .space 4096 * 32 # after added task_syscalls to tasksControlBlock, TaskManager will increase MAX_APP_NUM * MAX_SYSCALL_ID * sizeof(usize) = 16 * 512 * 8byte = 16 * 4k = 64k
     .globl boot_stack_top
 boot_stack_top:

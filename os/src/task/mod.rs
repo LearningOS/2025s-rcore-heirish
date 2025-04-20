@@ -57,7 +57,7 @@ lazy_static! {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
             task_syscalls: [0; MAX_SYSCALL_ID+1]
-        }; MAX_APP_NUM];
+        }; MAX_APP_NUM]; //on 64bit system, after added task_syscalls: tasks size increased MAX_APP_NUM * MAX_SYSCALL_ID * sizeof(usize) = 16 * 512 * 8byte = 16 * 4k = 64k
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
@@ -139,15 +139,14 @@ impl TaskManager {
         }
     }
 
-    fn increase_current_syscall_num(&self, syscall_id: usize) {
+    fn increase_current_syscall_num(&self, syscall_id: usize) -> usize {
         if syscall_id <= MAX_SYSCALL_ID {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[current].task_syscalls[syscall_id] += 1;
-            //let curr_num = inner.tasks[current].task_syscalls[syscall_id];
-            //inner.tasks[current].task_syscalls[syscall_id] = curr_num + 1;
+            inner.tasks[current].task_syscalls[syscall_id]
         } else {
-            //panic!("Invalid syscall_id {}!", syscall_id);
+            panic!("Invalid syscall_id {}!", syscall_id);
         }
     }
 
@@ -157,8 +156,7 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[current].task_syscalls[syscall_id]
         } else {
-            0
-            //panic!("Invalid syscall_id {}!", syscall_id);
+            panic!("Invalid syscall_id {}!", syscall_id);
         }
     }
 }
@@ -197,8 +195,8 @@ pub fn exit_current_and_run_next() {
 }
 
 /// Increase current task's invoked number of syscall_id
-pub fn increase_task_syscall_number(syscall_id: usize) {
-    TASK_MANAGER.increase_current_syscall_num(syscall_id);
+pub fn increase_task_syscall_number(syscall_id: usize) -> usize {
+    TASK_MANAGER.increase_current_syscall_num(syscall_id)
 }
 
 /// Get task syscall_id's invoked number

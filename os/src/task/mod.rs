@@ -14,6 +14,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
@@ -153,6 +154,29 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// increase current 'Running' task's syscall with syscall_id
+    pub fn increase_current_task_syscall_num(&self, syscall_id: usize) -> usize {
+        if syscall_id <= MAX_SYSCALL_NUM {
+            let mut inner = self.inner.exclusive_access();
+            let current = inner.current_task;
+            inner.tasks[current].syscall_count[syscall_id] += 1;
+            inner.tasks[current].syscall_count[syscall_id]
+        } else {
+            panic!("Invalid syscall_id {}", syscall_id);
+        }
+    }
+
+    /// get current 'Running' task's syscall with syscall_id
+    pub fn get_current_task_syscall_num(&self, syscall_id: usize) -> usize {
+        if syscall_id <= MAX_SYSCALL_NUM {
+            let inner = self.inner.exclusive_access();
+            let current = inner.current_task;
+            inner.tasks[current].syscall_count[syscall_id]
+        } else {
+            panic!("Invalid syscall_id {}", syscall_id);
+        }
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +225,14 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// increase current 'Running' task's syscall with syscall_id
+pub fn increase_current_task_syscall_num(syscall_id: usize) -> usize {
+    TASK_MANAGER.increase_current_task_syscall_num(syscall_id)
+}
+
+/// get current 'Running' task's syscall with syscall_id
+pub fn get_current_task_syscall_num(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_current_task_syscall_num(syscall_id)
 }

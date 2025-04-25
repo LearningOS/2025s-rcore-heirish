@@ -1,40 +1,53 @@
 ### 实现总结
-- sys_trace总体思路还是按ch3的来，只不过ch4里原己经声明了一个MAX_SYS_NUM=500,所以这次就用了这个值来定义TaskControlBlock::syscall_count的大小, 同时write和read内存加了一层虚拟内存到物理内存的翻译
-- sys_get_time:添加VA到PA的内存翻译，同时使用己经定义好的translated_byte_buffer来获取一段连续的物理内存段， 其中己处理好可能出现的跨页的情况
-- sys_mmap/sys_munmap:先根据题目要求做相应的前置判断，后面就根据当前running task的token来获取page_table进行处理，其中遇到的最大的坑是通过PageTable::from_token()获取的page_table中的frames并不是当前task实际的PTE的frames,而是一个空的数组，所以不能通过这个临时的page_table来进行有增加/删除frames的操作.详细原因有在代码里加comment.
-
-### 问答题
-1. 请列举 SV39 页表页表项的组成，描述其中的标志位有何作用？
-    > PPN + PTEFLAGS, 每个标志位的作用如下
+- 在struct TaskControlBlock添加一个长度为512(目前最大的syscall id为410)的usize数组用于存储当前task的每个syscall调用次数。数组index即为syscall id.
+- 增加kernel stack大小: 4096 * 16  -> 4096 * 32.因为在TaskCtrolBlock中添加了syscall调用次数属性后，TaskManager struct的大小会增加MAX_APP_NUM * MAX_SYSCALL_ID * sizeof(usize) = 16 * 512 * 8byte = 16 * 4k = 64k
+- 在AppManager中添加两个函数increase_current_syscall_num, get_task_syscall_number分别用于递增，获取当前task的某个系统调用次数，参数都为syscall id.
+- 按要求实现sys_trace函数功能，在trace request为2时调用APPManager的get_task_syscall_number
+- 在总的syscall分发函数os/src/syscall/mod.rs:syscall中，调用increase_current_syscall_num递增对应syscall的调用次数
+### 问答题 
+- 1.正确进入 U 态后，程序的特征还应有：使用 S 态特权指令，访问 S 态寄存器后会报错。 请同学们可以自行测试这些内容（运行 三个 bad 测例 (ch2b_bad_*.rs) ）， 描述程序出错行为，同时注意注明你使用的 sbi 及其版本。
+  > 直接用的make run查看输出结果，这三个bad测例没有正常退出，而是进入了trap流程，在trap_handler的处理逻辑中直接跳到了下一个app的执行。 rustsbi版本为:0.3.0-alpha.2
+- 2.深入理解 trap.S 中两个函数 __alltraps 和 __restore 的作用，并回答如下问题:
+  - L40：刚进入 __restore 时，sp 代表了什么值。请指出 __restore 的两种使用情景。
+    > 刚进入_restore时，sp代表了user stack。__restore的两种使用情景是:case1: start running app by __restor; case2: back to U after handling trape
+  - L43-L48：这几行汇编代码特殊处理了哪些寄存器？这些寄存器的的值对于进入用户态有何意义？请分别解释。
     ```
-    仅当 V(Valid) 位为 1 时，页表项才是合法的；
-    R/W/X 分别控制索引到这个页表项的对应虚拟页面是否允许读/写/取指；
-    U 控制索引到这个页表项的对应虚拟页面是否在 CPU 处于 U 特权级的情况下是否被允许访问；
-    G 我们不理会；
-    A(Accessed) 记录自从页表项上的这一位被清零之后，页表项的对应虚拟页面是否被访问过；
-    D(Dirty) 则记录自从页表项上的这一位被清零之后，页表项的对应虚拟页表是否被修改过。
+    ld t0, 32*8(sp)
+    ld t1, 33*8(sp)
+    ld t2, 2*8(sp)
+    csrw sstatus, t0
+    csrw sepc, t1
+    csrw sscratch, t2
     ```
-2. 缺页:缺页指的是进程访问页面时页面不在页表中或在页表中无效的现象，此时 MMU 将会返回一个中断， 告知 os 进程内存访问出了问题。os 选择填补页表并重新执行异常指令或者杀死进程。
-    - 2.1 请问哪些异常可能是缺页导致的？
-    - 2.2 发生缺页时，描述相关重要寄存器的值，上次实验描述过的可以简略。
-        缺页有两个常见的原因，其一是 Lazy 策略，也就是直到内存页面被访问才实际进行页表操作。 比如，一个程序被执行时，进程的代码段理论上需要从磁盘加载到内存。但是 os 并不会马上这样做， 而是会保存 .text 段在磁盘的位置信息，在这些代码第一次被执行时才完成从磁盘的加载操作。
-    - 2.3 这样做有哪些好处？
-       其实，我们的 mmap 也可以采取 Lazy 策略，比如：一个用户进程先后申请了 10G 的内存空间， 然后用了其中 1M 就直接退出了。按照现在的做法，我们显然亏大了，进行了很多没有意义的页表操作。
-    - 2.4 处理 10G 连续的内存页面，对应的 SV39 页表大致占用多少内存 (估算数量级即可)？
-    - 2.5 请简单思考如何才能实现 Lazy 策略，缺页时又如何处理？描述合理即可，不需要考虑实现。
-        缺页的另一个常见原因是 swap 策略，也就是内存页面可能被换到磁盘上了，导致对应页面失效。
-    - 2.6 此时页面失效如何表现在页表项(PTE)上？
-
-3. 双页表与单页表
-    为了防范侧信道攻击，我们的 os 使用了双页表。但是传统的设计一直是单页表的，也就是说， 用户线程和对应的内核线程共用同一张页表，只不过内核对应的地址只允许在内核态访问。 (备注：这里的单/双的说法仅为自创的通俗说法，并无这个名词概念，详情见 KPTI )
-    - 3.1 在单页表情况下，如何更换页表？
-    - 3.2 单页表情况下，如何控制用户态无法访问内核页面？（tips:看看上一题最后一问）
-    - 3.3 单页表有何优势？（回答合理即可）
-    - 3.4 双页表实现下，何时需要更换页表？假设你写一个单页表操作系统，你会选择何时更换页表（回答合理即可）？
+    > 特殊处理了sstatus, spec,和sscrash寄存器。其中sstatus保存了Trap之前的CPU特权级信息U, 而spec保存了Trap处理完成后会执行的下一条指令。也就是U态的发生trap的指令的下一条，在trap处理完成后会返回到这个地址继续执行。sscratch保存了user stack地址. 三这个寄存器的值对返回到U态继续执行都至关重要: U态+指令地址+User stack
+  - L50-L56：为何跳过了 x2 和 x4？
+    ```
+    ld x1, 1*8(sp)
+    ld x3, 3*8(sp)
+    .set n, 5
+    .rept 27
+       LOAD_GP %n
+       .set n, n+1
+    .endr
+    ```
+    > x2:2*8(sp)中存的是进入trap之前的sp值，user stack的地址,己经加载到了sscratch寄存器了。 tp(x4) 寄存器application没用到，除非我们手动出于一些特殊用途使用它，否则一般也不会被用到.
+  - L60：该指令之后，sp 和 sscratch 中的值分别有什么意义？`csrrw sp, sscratch, sp`
+    > 指令执行后，sp重新指向用户栈栈项，sscratch指向内核栈栈顶
+  - __restore：中发生状态切换在哪一条指令？为何该指令执行之后会进入用户态？
+    > sret指令解释如下
+    ```
+    sret 会将当前特权级别从 Supervisor 模式（S-Mode）切换回 Supervisor Previous Privilege Mode（SPP） 所记录的特权级别（通常是 User 模式）。
+    恢复程序计数器（PC）:指令会从 sepc（Supervisor Exception Program Counter）寄存器中读取地址，并跳转到该地址继续执行程序。sepc 通常由硬件在异常/中断发生时自动保存。
+    ``` 
+    而在sret执行前,在代码L43-L48(题2.2), sstatus己被设置了U态，spec己被设置成了下一条用户态指令，sp也恢复成了指现用户栈栈顶，所以这条指令后能正常进入用户态并执行。
+  - L13：该指令之后，sp 和 sscratch 中的值分别有什么意义？`csrrw sp, sscratch, sp`
+    > 指令执行后，sp指向内核栈栈项，sscratch指向用户栈栈顶
+  - 从 U 态进入 S 态是哪一条指令发生的？
+    > call trap_handler
 ### 荣誉准则
 1. 在完成本次实验的过程（含此前学习的过程）中，我曾分别与 以下各位 就（与本次实验相关的）以下方面做过交流，还在代码中对应的位置以注释形式记录了具体的交流对象及内容：
    > NA
-2. 此外，我也参考了以下资料 ，还在代码中对应的位置以注释形式记录了具体的参考来源及内容：
+2. 此外，我也参考了 以下资料 ，还在代码中对应的位置以注释形式记录了具体的参考来源及内容：
    > rCore-Tutorial-Guide-2025S文档
 3. 我独立完成了本次实验除以上方面之外的所有工作，包括代码与文档。 我清楚地知道，从以上方面获得的信息在一定程度上降低了实验难度，可能会影响起评分。
 4. 我从未使用过他人的代码，不管是原封不动地复制，还是经过了某些等价转换。 我未曾也不会向他人（含此后各届同学）复制或公开我的实验代码，我有义务妥善保管好它们。 我提交至本实验的评测系统的代码，均无意于破坏或妨碍任何计算机系统的正常运转。 我清楚地知道，以上情况均为本课程纪律所禁止，若违反，对应的实验成绩将按“-100”分计。

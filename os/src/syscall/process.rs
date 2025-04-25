@@ -120,7 +120,7 @@ pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
     //precondition: start_va is aligned
     //DANGER: do not use this temporary page_table to do any operations that might add items to PageTable::frames,
     //because it's actually create a new empty vector in PageTable::from_token, not current running tasks's actual pte frames.
-    let mut page_table = PageTable::from_token(current_user_token());
+    let page_table = PageTable::from_token(current_user_token());
     let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
     for vpn in vpn_range {
         if let Some(pte) = page_table.translate(vpn) {

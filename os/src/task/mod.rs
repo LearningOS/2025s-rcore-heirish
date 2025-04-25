@@ -16,6 +16,7 @@ mod task;
 
 use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{PTEFlags, PhysPageNum, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -177,6 +178,15 @@ impl TaskManager {
             panic!("Invalid syscall_id {}", syscall_id);
         }
     }
+
+    /// map for current 'Running' task
+    pub fn map_one_frame(&self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current]
+            .memory_set
+            .map_one_frame(vpn, ppn, flags);
+    }
 }
 
 /// Run the first task in task list.
@@ -235,4 +245,9 @@ pub fn increase_current_task_syscall_num(syscall_id: usize) -> usize {
 /// get current 'Running' task's syscall with syscall_id
 pub fn get_current_task_syscall_num(syscall_id: usize) -> usize {
     TASK_MANAGER.get_current_task_syscall_num(syscall_id)
+}
+
+/// map one frame for current 'Runnning' task
+pub fn map_one_frame_current_task(vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+    TASK_MANAGER.map_one_frame(vpn, ppn, flags);
 }

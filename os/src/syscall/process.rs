@@ -3,7 +3,7 @@ use crate::{
     mm::{frame_alloc, translated_byte_buffer, PTEFlags, PageTable, VPNRange, VirtAddr},
     task::{
         change_program_brk, current_user_token, exit_current_and_run_next,
-        get_current_task_syscall_num, suspend_current_and_run_next,
+        get_current_task_syscall_num, map_one_frame_current_task, suspend_current_and_run_next,
     },
     timer::get_time_us,
 };
@@ -54,33 +54,38 @@ pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
     trace!("kernel: sys_trace");
     match trace_request {
         0 => {
-            println!("[Kernel] sys_trace request:0");
             let page_table = PageTable::from_token(current_user_token());
-            if let Some(page_table_entry) = page_table.translate(VirtAddr::from(id).into()) {
-                if page_table_entry.is_valid() && page_table_entry.readable() {
-                    let byte_array = page_table_entry.ppn().get_bytes_array();
-                    println!("[Kernel] sys_trace request:0, will read");
+            let virt_addr = VirtAddr::from(id);
+            if let Some(page_table_entry) = page_table.translate(virt_addr.floor()) {
+                if page_table_entry.is_valid()
+                    && page_table_entry.readable()
+                    && page_table_entry.umode_accessable()
+                {
+                    let addr_offset = virt_addr.page_offset();
+                    let byte_array = &page_table_entry.ppn().get_bytes_array()[addr_offset..];
                     return byte_array[0] as isize;
                 }
             }
             -1
         }
         1 => {
-            println!("[Kernel] sys_trace request:1");
             let page_table = PageTable::from_token(current_user_token());
-            if let Some(page_table_entry) = page_table.translate(VirtAddr::from(id).into()) {
-                if page_table_entry.is_valid() && page_table_entry.writable() {
-                    let byte_array = page_table_entry.ppn().get_bytes_array();
-                    println!("[Kernel] sys_trace request:1, will write");
+            let virt_addr = VirtAddr::from(id);
+            if let Some(page_table_entry) = page_table.translate(virt_addr.floor()) {
+                if page_table_entry.is_valid()
+                    && page_table_entry.writable()
+                    && page_table_entry.umode_accessable()
+                {
+                    let addr_offset = virt_addr.page_offset();
+                    let mut byte_array =
+                        &mut page_table_entry.ppn().get_bytes_array()[addr_offset..];
                     byte_array[0] = data as u8;
+                    return 0;
                 }
             }
             -1
         }
-        2 => {
-            println!("[Kernel] sys_trace request:2");
-            get_current_task_syscall_num(id) as isize
-        }
+        2 => get_current_task_syscall_num(id) as isize,
         _ => -1,
     }
 }
@@ -114,32 +119,30 @@ pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
     }
 
     //precondition: start_va is aligned
+    //DANGER: do not use this temporary page_table to do any operations that might add items to PageTable::frames,
+    //because it's actually create a new empty vector in PageTable::from_token, not current running tasks's actual pte frames.
     let mut page_table = PageTable::from_token(current_user_token());
     let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
     for vpn in vpn_range {
         if let Some(pte) = page_table.translate(vpn) {
-            println!(
-                "[Kernel] sys_mmap found pte {:?} for vpn {:?}",
-                pte.flags(),
-                vpn
-            );
             if pte.is_valid() {
-                println!("[Kernel] sys_mmap already mapped vpn {:?}", vpn);
                 return -1;
             }
         }
         if let Some(frame) = frame_alloc() {
-            page_table.map(vpn, frame.ppn, pte_flags);
-            println!(
-                "[Kernel] sys_mmap mapped vpn {:?}, pte flags {:?}., len:{}",
-                vpn, pte_flags, len
-            );
+            // here DO NOT use page_table.map() to map the frame, because here page_table is a temporary variable.
+            // after this sys call it weill be reclaimed., so page_table.frames will also be reclaimed.
+            // then all the page_table.frames will be push into StackFrameAllocator.recycled.
+            // when a new memory frame allocate request to StackFrameAllocator, all bit in the frame will be cleared
+            // so the new pte added by page_table.frames will lost in next sys_mmap call
+            //if use page_table.map here, it will be
+            //1st sys_mmap: page_table.map -> page_table.frame.push -> end of call -> page_table reclaim -> FrameTrack::Drop->frame_dealloc
+            //2nd sys_mmap with same vpn : page_table.transfer will found pte, all info including ppn and flags  will be lost because that leaf node frame already reclaimed at the end of previous call.
+            map_one_frame_current_task(vpn, ppn, flags);
         } else {
-            println!("[Kernel] sys_mmap allocate physical frame failed.");
             return -1;
         }
     }
-    println!("[Kernel] sys_mmap mapping done");
     0
 }
 
@@ -156,22 +159,13 @@ pub fn sys_munmap(start: usize, len: usize) -> isize {
     for vpn in vpn_range {
         let pte_ret = page_table.translate(vpn);
         if pte_ret.is_none() {
-            println!(
-                "[Kernel] sys_munmap vpn {:?} not mapped yet, no pte found!",
-                vpn
-            );
             return -1;
         }
         let pte = pte_ret.unwrap();
         if !pte.is_valid() {
-            println!(
-                "[Kernel] sys_munmap vpn {:?} not mapped yet, pte_flags:{:?}",
-                vpn,
-                pte.flags()
-            );
             return -1;
         }
-        page_table.unmap(vpn);
+        page_table.unmap(vpn); //here it's OK to use temporary page_table, because in unmmap no frames removed, only change its content.
     }
     0
 }

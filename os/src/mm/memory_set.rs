@@ -262,6 +262,11 @@ impl MemorySet {
             false
         }
     }
+
+    ///map one frame
+    pub fn map_one_frame(&mut self, vpn: VirtPageNum, ppn: VirtPageNum, flags: PTEFlags) {
+        self.page_table.map(vpn, ppn, flags);
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {

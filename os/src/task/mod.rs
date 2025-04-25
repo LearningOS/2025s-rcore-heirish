@@ -181,7 +181,7 @@ impl TaskManager {
 
     /// map for current 'Running' task
     pub fn map_one_frame(&self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
-        let inner = self.inner.exclusive_access();
+        let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current]
             .memory_set

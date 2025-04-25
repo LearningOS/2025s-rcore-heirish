@@ -77,8 +77,7 @@ pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
                     && page_table_entry.umode_accessable()
                 {
                     let addr_offset = virt_addr.page_offset();
-                    let mut byte_array =
-                        &mut page_table_entry.ppn().get_bytes_array()[addr_offset..];
+                    let byte_array = &mut page_table_entry.ppn().get_bytes_array()[addr_offset..];
                     byte_array[0] = data as u8;
                     return 0;
                 }
@@ -138,7 +137,7 @@ pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
             //if use page_table.map here, it will be
             //1st sys_mmap: page_table.map -> page_table.frame.push -> end of call -> page_table reclaim -> FrameTrack::Drop->frame_dealloc
             //2nd sys_mmap with same vpn : page_table.transfer will found pte, all info including ppn and flags  will be lost because that leaf node frame already reclaimed at the end of previous call.
-            map_one_frame_current_task(vpn, ppn, flags);
+            map_one_frame_current_task(vpn, frame.ppn, pte_flags);
         } else {
             return -1;
         }

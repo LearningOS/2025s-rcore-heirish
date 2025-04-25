@@ -264,7 +264,7 @@ impl MemorySet {
     }
 
     ///map one frame
-    pub fn map_one_frame(&mut self, vpn: VirtPageNum, ppn: VirtPageNum, flags: PTEFlags) {
+    pub fn map_one_frame(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
         self.page_table.map(vpn, ppn, flags);
     }
 }

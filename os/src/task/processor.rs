@@ -7,7 +7,7 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
-use crate::mm::{PTEFlags, PhysPageNum, VirtPageNum};
+use crate::mm::{MapPermission, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
@@ -112,9 +112,13 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 }
 
 /// map a vpn in current task
-pub fn current_task_map_one(vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+pub fn current_task_map_vpn_range(
+    start_vpn: VirtPageNum,
+    end_vpn: VirtPageNum,
+    flags: MapPermission,
+) -> isize {
     current_task()
         .unwrap()
         .inner_exclusive_access()
-        .map(vpn, ppn, flags);
+        .map_vpn_range(start_vpn, end_vpn, flags)
 }

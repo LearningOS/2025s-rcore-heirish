@@ -2,7 +2,10 @@
 use super::{add_task, current_task, TaskContext};
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PTEFlags, PhysPageNum, VirtAddr, VirtPageNum, KERNEL_SPACE};
+use crate::mm::{
+    frame_alloc, MapPermission, MemorySet, PhysPageNum, VPNRange, VirtAddr, VirtPageNum,
+    KERNEL_SPACE,
+};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -91,8 +94,26 @@ impl TaskControlBlockInner {
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
     }
-    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
-        self.memory_set.map(vpn, ppn, flags);
+    pub fn map_vpn_range(
+        &mut self,
+        start_vpn: VirtPageNum,
+        end_vpn: VirtPageNum,
+        flags: MapPermission,
+    ) -> isize {
+        let vpn_range = VPNRange::new(start_vpn, end_vpn);
+        for vpn in vpn_range {
+            if let Some(pte) = self.memory_set.translate(vpn) {
+                if pte.is_valid() {
+                    return -1;
+                }
+            }
+            if let Some(frame) = frame_alloc() {
+                self.memory_set.map(vpn, frame.ppn, flags);
+            } else {
+                return -1;
+            }
+        }
+        0
     }
 }
 

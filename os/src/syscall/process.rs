@@ -7,9 +7,9 @@ use alloc::sync::Arc;
 
 use crate::{
     loader::get_app_data_by_name,
-    mm::{frame_alloc, translated_refmut, translated_str, PTEFlags, PageTable},
+    mm::{translated_refmut, translated_str, MapPermission, PageTable},
     task::{
-        add_task, current_task, current_task_map_one, current_user_token,
+        add_task, current_task, current_task_map_vpn_range, current_user_token,
         exit_current_and_run_next, suspend_current_and_run_next,
     },
 };
@@ -146,43 +146,22 @@ pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
         return -1;
     }
 
-    let mut pte_flags = PTEFlags::U;
+    let mut flags = MapPermission::U;
     if prot & 0x1 != 0 {
-        pte_flags |= PTEFlags::R;
+        flags |= MapPermission::R;
     }
     if prot & 0x2 != 0 {
-        pte_flags |= PTEFlags::W;
+        flags |= MapPermission::W;
     }
     if prot & 0x4 != 0 {
-        pte_flags |= PTEFlags::X;
+        flags |= MapPermission::X;
     }
 
     //precondition: start_va is aligned
     //DANGER: do not use this temporary page_table to do any operations that might add items to PageTable::frames,
     //because it's actually create a new empty vector in PageTable::from_token, not current running tasks's actual pte frames.
-    let page_table = PageTable::from_token(current_user_token());
-    let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
-    for vpn in vpn_range {
-        if let Some(pte) = page_table.translate(vpn) {
-            if pte.is_valid() {
-                return -1;
-            }
-        }
-        if let Some(frame) = frame_alloc() {
-            // here DO NOT use page_table.map() to map the frame, because here page_table is a temporary variable.
-            // after this sys call it weill be reclaimed., so page_table.frames will also be reclaimed.
-            // then all the page_table.frames will be push into StackFrameAllocator.recycled.
-            // when a new memory frame allocate request to StackFrameAllocator, all bit in the frame will be cleared
-            // so the new pte added by page_table.frames will lost in next sys_mmap call
-            //if use page_table.map here, it will be
-            //1st sys_mmap: page_table.map -> page_table.frame.push -> end of call -> page_table reclaim -> FrameTrack::Drop->frame_dealloc
-            //2nd sys_mmap with same vpn : page_table.transfer will found pte, all info including ppn and flags  will be lost because that leaf node frame already reclaimed at the end of previous call.
-            current_task_map_one(vpn, frame.ppn, pte_flags);
-        } else {
-            return -1;
-        }
-    }
-    0
+    //let page_table = PageTable::from_token(current_user_token());
+    current_task_map_vpn_range(start_va.floor(), end_va.ceil(), flags)
 }
 
 /// YOUR JOB: Implement munmap.

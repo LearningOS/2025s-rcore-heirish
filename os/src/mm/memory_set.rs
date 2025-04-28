@@ -318,6 +318,12 @@ impl MemorySet {
             false
         }
     }
+
+    /// map one frame to page table
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
+        let pte_flags = PTEFlags::from_bits(flags.bits).unwrap();
+        self.page_table.map(vpn, ppn, pte_flags);
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {

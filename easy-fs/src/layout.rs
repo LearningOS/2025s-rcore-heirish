@@ -86,6 +86,7 @@ pub struct DiskInode {
     pub indirect1: u32,
     pub indirect2: u32,
     type_: DiskInodeType,
+    links: u32,
 }
 
 impl DiskInode {
@@ -97,6 +98,7 @@ impl DiskInode {
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+        self.links = 1;
     }
     /// Whether this inode is a directory
     pub fn is_dir(&self) -> bool {
@@ -106,6 +108,24 @@ impl DiskInode {
     #[allow(unused)]
     pub fn is_file(&self) -> bool {
         self.type_ == DiskInodeType::File
+    }
+    ///get this inode's hard link num
+    pub fn get_links(&self) -> u32 {
+        self.links
+    }
+    ///increase this inode's hard link number
+    pub fn inc_links(&mut self) {
+        self.links += 1;
+    }
+    ///decrease this inode's hard link number
+    pub fn dec_links(&mut self) {
+        if self.links <= 1 {
+            panic!(
+                "Illegal operation! dec_link for file with rurrent links {}",
+                self.links
+            );
+        }
+        self.links -= 1;
     }
     /// Return block number correspond to size.
     pub fn data_blocks(&self) -> u32 {
@@ -392,7 +412,7 @@ impl DiskInode {
 #[repr(C)]
 pub struct DirEntry {
     name: [u8; NAME_LENGTH_LIMIT + 1],
-    inode_id: u32,
+    data_inode_id: u32,
 }
 /// Size of a directory entry
 pub const DIRENT_SZ: usize = 32;
@@ -402,7 +422,7 @@ impl DirEntry {
     pub fn empty() -> Self {
         Self {
             name: [0u8; NAME_LENGTH_LIMIT + 1],
-            inode_id: 0,
+            data_inode_id: 0,
         }
     }
     /// Crate a directory entry from name and inode number
@@ -411,7 +431,7 @@ impl DirEntry {
         bytes[..name.len()].copy_from_slice(name.as_bytes());
         Self {
             name: bytes,
-            inode_id,
+            data_inode_id: inode_id,
         }
     }
     /// Serialize into bytes
@@ -428,7 +448,7 @@ impl DirEntry {
         core::str::from_utf8(&self.name[..len]).unwrap()
     }
     /// Get inode number of the entry
-    pub fn inode_id(&self) -> u32 {
-        self.inode_id
+    pub fn data_inode_id(&self) -> u32 {
+        self.data_inode_id
     }
 }

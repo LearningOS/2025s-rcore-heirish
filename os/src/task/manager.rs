@@ -1,5 +1,6 @@
 //!Implementation of [`TaskManager`]
 use super::TaskControlBlock;
+use crate::config::BIGSTRIDE;
 use crate::sync::UPSafeCell;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -23,7 +24,23 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        let idx = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                a.inner_exclusive_access()
+                    .stride
+                    .cmp(&b.inner_exclusive_access().stride)
+            })
+            .map(|(i, _)| i);
+
+        let next = idx.and_then(|i| self.ready_queue.remove(i));
+        if let Some(task) = &next {
+            let mut inner_task = task.inner_exclusive_access();
+            inner_task.stride += BIGSTRIDE as usize / inner_task.priority;
+        }
+        next
     }
 }
 

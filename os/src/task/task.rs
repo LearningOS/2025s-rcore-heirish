@@ -1,9 +1,12 @@
 //! Types related to task management & Functions for completely changing TCB
-use super::TaskContext;
+use super::{add_task, current_task, TaskContext};
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{
+    frame_alloc, MapPermission, MemorySet, PhysPageNum, VPNRange, VirtAddr, VirtPageNum,
+    KERNEL_SPACE,
+};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -71,6 +74,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    ///task stride
+    pub stride: usize,
+
+    ///task priority
+    pub priority: usize,
 }
 
 impl TaskControlBlockInner {
@@ -93,6 +102,27 @@ impl TaskControlBlockInner {
             self.fd_table.push(None);
             self.fd_table.len() - 1
         }
+    }
+    pub fn map_vpn_range(
+        &mut self,
+        start_vpn: VirtPageNum,
+        end_vpn: VirtPageNum,
+        flags: MapPermission,
+    ) -> isize {
+        let vpn_range = VPNRange::new(start_vpn, end_vpn);
+        for vpn in vpn_range {
+            if let Some(pte) = self.memory_set.translate(vpn) {
+                if pte.is_valid() {
+                    return -1;
+                }
+            }
+            if let Some(frame) = frame_alloc() {
+                self.memory_set.map(vpn, frame.ppn, flags);
+            } else {
+                return -1;
+            }
+        }
+        0
     }
 }
 
@@ -135,6 +165,8 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         };
@@ -149,7 +181,22 @@ impl TaskControlBlock {
         );
         task_control_block
     }
+    /// create a child process, create memory_set from elf data and start execution
+    pub fn spawn(&self, elf_data: &[u8]) -> usize {
+        //create a new TaskControlBlock from elf data(new pid/kernel statck memory set also created)
+        let task_control_block = Arc::new(TaskControlBlock::new(elf_data));
 
+        //link parent and child
+        task_control_block.inner_exclusive_access().parent =
+            Some(Arc::downgrade(&current_task().unwrap()));
+        self.inner_exclusive_access()
+            .children
+            .push(task_control_block.clone());
+        let childid = task_control_block.pid.0;
+        add_task(task_control_block);
+        //return childid
+        childid
+    }
     /// Load a new elf to replace the original application address space and start execution
     pub fn exec(&self, elf_data: &[u8]) {
         // memory_set with elf program headers/trampoline/trap context/user stack
@@ -216,6 +263,8 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         });
@@ -260,6 +309,11 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// set current tasks' priority
+    pub fn set_priority(&self, prio: isize) {
+        self.inner_exclusive_access().priority = prio as usize;
     }
 }
 

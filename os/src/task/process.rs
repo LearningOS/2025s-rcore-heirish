@@ -15,6 +15,16 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
 
+/// Resource types
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SyncResourceType {
+    ///mutex type
+    Mutex = 0,
+    ///semaphore type
+    Semaphore = 1,
+}
+pub const RESOURCE_TYPES: usize = 2;
+
 /// Process Control Block
 pub struct ProcessControlBlock {
     /// immutable
@@ -49,6 +59,22 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// Note: how to handle the resource for exited thread, how to deallocate the resource?
+    /// 1. as per the allocated/needed resource for exited thread, No need to take care of it.
+    /// because a thread executing code wil make sure it's allocated and needed resource is 0 before exit, or else it will not able to exit.
+    /// after thread exited, resource_allocated[:][tid][:] = 0, resource_needed[:][tid][:]= 0
+    /// 2. as per available resource, for mutex create will inc 1, lock will dec 1, unlock will inc 1
+    /// for semaphore, create will inc n, down will dec 1, up will inc 1
+    /// so once resource created, it will be available till end of the process.
+    /// deadlock detect enabled
+    pub deadlock_detect_enabled: bool,
+    /// mutex/semaphore resource available, [Vec::new(); RESOURCE_TYPES]
+    pub resource_available: Vec<Vec<usize>>,
+    /// mutex/semaphore resource allocated
+    pub resource_allocated: Vec<Vec<Vec<usize>>>,
+    /// mutex/semaphore resource allocated
+    pub resource_needed: Vec<Vec<Vec<usize>>>,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +107,175 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    /// add available resource
+    pub fn inc_available_resource(
+        &mut self,
+        res_type: SyncResourceType,
+        res_id: usize,
+        res_count: usize,
+    ) {
+        let res_table = &mut self.resource_available[res_type as usize];
+        if res_table.len() < res_id + 1 {
+            res_table.resize(res_id + 1, 0);
+        }
+        res_table[res_id] += res_count;
+    }
+    //decrease avaialble resource
+    fn dec_available_resource(
+        &mut self,
+        res_type: SyncResourceType,
+        res_id: usize,
+        res_count: usize,
+    ) {
+        let res_table = &mut self.resource_available[res_type as usize];
+        if res_table.len() < res_id + 1 {
+            res_table.resize(res_id + 1, 0);
+        }
+        res_table[res_id] -= res_count;
+    }
+
+    ///init task's resource allocated and needed to 0
+    pub fn init_task_resouce_data(&mut self, tid: usize) {
+        for i in 0..RESOURCE_TYPES as usize {
+            let type_resource_allocated = &mut self.resource_allocated[i];
+            let type_resource_needed = &mut self.resource_needed[i];
+
+            assert_eq!(type_resource_allocated.len(), type_resource_needed.len());
+            if type_resource_allocated.len() < tid + 1 {
+                type_resource_allocated.resize(tid + 1, Vec::new());
+                type_resource_needed.resize(tid + 1, Vec::new());
+            }
+        }
+    }
+
+    /// increase allocated resource
+    pub fn inc_allocated_resource(
+        &mut self,
+        tid: usize,
+        res_type: SyncResourceType,
+        res_id: usize,
+        res_count: usize,
+    ) {
+        //println!(
+        //    "inc allocated resource :tid {}, res_type {}, res_id {}, res_count {}",
+        //    tid, res_type as usize, res_id, res_count
+        //);
+        let thread_resource_allocated = &mut self.resource_allocated[res_type as usize][tid];
+        if thread_resource_allocated.len() < res_id + 1 {
+            thread_resource_allocated.resize(res_id + 1, 0);
+        }
+        thread_resource_allocated[res_id] += res_count;
+        self.dec_available_resource(res_type, res_id, res_count);
+    }
+
+    /// decrease allocated resource
+    pub fn dec_allocated_resource(
+        &mut self,
+        tid: usize,
+        res_type: SyncResourceType,
+        res_id: usize,
+        res_count: usize,
+    ) {
+        //println!(
+        //    "dec allocated resource :tid {}, res_type {}, res_id {}, res_count {}",
+        //    tid, res_type as usize, res_id, res_count
+        //);
+        let task_allocated_resource = &mut self.resource_allocated[res_type as usize][tid];
+        //handle unlock/up without lock/down use cases
+        if res_id < task_allocated_resource.len() {
+            let actual_count = res_count.min(task_allocated_resource[res_id]);
+            self.resource_allocated[res_type as usize][tid][res_id] -= actual_count;
+            self.inc_available_resource(res_type, res_id, actual_count);
+        }
+    }
+
+    /// increase needed resource
+    pub fn inc_needed_resource(
+        &mut self,
+        tid: usize,
+        res_type: SyncResourceType,
+        res_id: usize,
+        res_count: usize,
+    ) {
+        //println!(
+        //    "inc needed resource :tid {}, res_type {}, res_id {}, res_count {}",
+        //    tid, res_type as usize, res_id, res_count
+        //);
+        let thread_resources_needed = &mut (self.resource_needed[res_type as usize][tid]);
+        if thread_resources_needed.len() < res_id + 1 {
+            thread_resources_needed.resize(res_id + 1, 0);
+        }
+        thread_resources_needed[res_id] += res_count;
+    }
+
+    /// decrease needed resource
+    pub fn dec_needed_resource(
+        &mut self,
+        tid: usize,
+        res_type: SyncResourceType,
+        res_id: usize,
+        res_count: usize,
+    ) {
+        //println!(
+        //    "dec needed resource :tid {}, res_type {}, res_id {}, res_count {}",
+        //    tid, res_type as usize, res_id, res_count
+        //);
+        self.resource_needed[res_type as usize][tid][res_id] -= res_count;
+    }
+
+    ///check mutex deadlock
+    pub fn is_safe_acquire(&mut self, res_type: SyncResourceType) -> bool {
+        if self.deadlock_detect_enabled {
+            let type_resource_allocated = &self.resource_allocated[res_type as usize];
+            let type_resource_needed = &self.resource_needed[res_type as usize];
+
+            assert_eq!(self.tasks.len(), type_resource_allocated.len());
+            assert_eq!(type_resource_allocated.len(), type_resource_needed.len());
+            //step 1
+            let mut work = self.resource_available[res_type as usize].clone();
+            let mut finish = vec![false; self.tasks.len()];
+
+            //println!("in is_safe_acquire, tid {}, type_resource_allocated: {:?}, type_resource_needed:{:?},work:{:?},finish:{:?}"
+            //, tid, type_resource_allocated, type_resource_needed,work, finish);
+            loop {
+                //step 2
+                let mut found = false;
+                for task_id in 0..finish.len() {
+                    let task_resource_needed = &type_resource_needed[task_id];
+                    let task_resource_allocated = &type_resource_allocated[task_id];
+                    if finish[task_id] == false
+                        && task_resource_needed
+                            .iter()
+                            .enumerate()
+                            .all(|(resource_id, &val)| val <= work[resource_id])
+                    {
+                        //step 3
+                        let _: Vec<_> = task_resource_allocated
+                            .iter()
+                            .enumerate()
+                            .map(|(resource_id, &resource_count)| {
+                                work[resource_id] += resource_count;
+                            })
+                            .collect();
+                        finish[task_id] = true;
+                        found = true;
+                        //println!("in is_safe_acquire, step 3: type_resource_allocated: {:?}, type_resource_needed:{:?},work:{:?},finish:{:?}"
+                        //, type_resource_allocated, type_resource_needed,work, finish);
+                    }
+                }
+                //step 4
+                if found == false {
+                    break;
+                }
+            }
+            //step 4
+            let is_safe = finish.iter().all(|&val| val);
+            //println!("is safe?{}", is_safe);
+            is_safe
+        } else {
+            true
+        }
     }
 }
 
@@ -119,6 +314,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+
+                    deadlock_detect_enabled: false,
+                    resource_available: vec![Vec::new(); RESOURCE_TYPES],
+                    resource_allocated: vec![Vec::new(); RESOURCE_TYPES], //thread 0, main thread
+                    resource_needed: vec![Vec::new(); RESOURCE_TYPES],    //thread 0, main thread
                 })
             },
         });
@@ -144,6 +344,14 @@ impl ProcessControlBlock {
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
         process_inner.tasks.push(Some(Arc::clone(&task)));
+        process_inner.init_task_resouce_data(
+            task.as_ref()
+                .inner_exclusive_access()
+                .res
+                .as_ref()
+                .unwrap()
+                .tid,
+        );
         drop(process_inner);
         insert_into_pid2process(process.getpid(), Arc::clone(&process));
         // add main thread to scheduler
@@ -245,6 +453,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+
+                    deadlock_detect_enabled: false,
+                    resource_available: vec![Vec::new(); RESOURCE_TYPES],
+                    resource_allocated: vec![Vec::new(); RESOURCE_TYPES], //thread 0, main thread
+                    resource_needed: vec![Vec::new(); RESOURCE_TYPES],    //thread 0, main thread
                 })
             },
         });
@@ -267,6 +480,14 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.init_task_resouce_data(
+            task.as_ref()
+                .inner_exclusive_access()
+                .res
+                .as_ref()
+                .unwrap()
+                .tid,
+        );
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
